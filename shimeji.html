@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 160px; height: 220px;
+    background: transparent;
+    overflow: hidden;
+    user-select: none;
+  }
+  #container {
+    position: relative;
+    width: 160px; height: 220px;
+  }
+  #sprite {
+    position: absolute;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: grab;
+    transition: none;
+  }
+  #sprite.flipped {
+    transform: scaleX(-1);
+  }
+  #bubble {
+    position: absolute;
+    bottom: 195px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 220, 240, 0.96);
+    border: 2px solid #e87ab0;
+    border-radius: 12px;
+    padding: 6px 10px;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 11px;
+    color: #7a2050;
+    white-space: nowrap;
+    max-width: 200px;
+    white-space: normal;
+    text-align: center;
+    display: none;
+    z-index: 999;
+    box-shadow: 0 2px 8px rgba(200,100,150,0.3);
+    pointer-events: none;
+  }
+  #bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top-color: #e87ab0;
+  }
+  #emotion {
+    position: absolute;
+    font-size: 22px;
+    display: none;
+    pointer-events: none;
+    animation: emotionPop 0.4s ease-out;
+    z-index: 998;
+  }
+  @keyframes emotionPop {
+    0% { transform: scale(0); opacity: 0; }
+    60% { transform: scale(1.3); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  #ctx-menu {
+    position: fixed;
+    background: rgba(40, 15, 35, 0.95);
+    border: 1px solid #cc66aa;
+    border-radius: 8px;
+    padding: 4px 0;
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 12px;
+    color: #f0c0e0;
+    min-width: 140px;
+    display: none;
+    z-index: 9999;
+    box-shadow: 0 4px 16px rgba(200,80,140,0.4);
+  }
+  #ctx-menu div {
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  #ctx-menu div:hover { background: rgba(200,80,140,0.3); }
+  #ctx-menu .sep { height: 1px; background: #cc66aa44; margin: 3px 0; padding: 0; cursor: default; }
+</style>
+</head>
+<body>
+<div id="container">
+  <div id="bubble"></div>
+  <div id="emotion"></div>
+  <img id="sprite" draggable="false"/>
+  <div id="ctx-menu">
+    <div onclick="sayHello()">💬 Say Hi</div>
+    <div onclick="doHappy()">✨ Cheer up!</div>
+    <div onclick="doSurprise()">💥 Surprise!</div>
+    <div class="sep"></div>
+    <div onclick="spawnAnother()">🌸 Spawn another</div>
+    <div onclick="closeMe()">❌ Remove</div>
+  </div>
+</div>
+
+<script src="frames_data.js"></script>
+<script>
+const { ipcRenderer } = require('electron');
+
+// ── State ──────────────────────────────────────────────────────
+let wx = 0, wy = 0;           // window position
+let SW = 1920, SH = 1080;     // screen size
+let state = 'idle';
+let dir = 1;                  // 1=right, -1=left
+let frameIdx = 0;
+let frameTick = 0;
+let stateTimer = 0;
+let dragOffX = 0, dragOffY = 0;
+let isDragging = false;
+let animInterval = null;
+let behaviorInterval = null;
+let mouseScreenX = SW/2, mouseScreenY = SH/2;
+let lastMouseX = SW/2, lastMouseY = SH/2;
+let idleCount = 0;
+
+// ── Dialogs ──────────────────────────────────────────────────
+const dialogs = {
+  idle:     ["...*hums softly*", "My mech legs are tired~", "Hehe~ found you!", "I'll protect this screen!", "Scanning environment...", "All systems nominal♪", "(doing a little stretch)", "You're still here~?"],
+  happy:    ["Yay!! ✨", "Heehee~! ♪", "This makes me happy!", "Spinning spinning~!", "Ahh I feel great!", "💕 Kyaa~!"],
+  surprised:["W-WHA?!", "Ehh?! (⊙_⊙)", "AH?! Scan detected!!", "D-don't scare me!!", "SYSTEM ALERT!!"],
+  walk:     ["*march march*", "Exploring!", "Where to next?~", "Beep boop walking~"],
+  sit:      ["Taking a break~", "...zzz", "*yawns*", "Just resting mech legs."],
+  drag:     ["W-waah! Put me down!!", "HEY!! (>.<)", "I'm flying—!!", "Scanner offline!!"],
+  drop:     ["Oof! (x_x)", "That was scary~!", "My sensors are dizzy...", "H-hmpf. Fine."],
+  mouse:    ["I see you~", "Don't run away!", "Tracking target ♪", "Hehe, got you!"],
+  climb:    ["Climbing up~!", "Scanning walls!", "Spider mode activated!", "My legs are useful!"]
+};
+
+function getRand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// ── Sprite frames map ────────────────────────────────────────
+const stateFrames = {
+  idle:      [['idle0'], ['idle1'], ['idle0'], ['idle0'], ['idle1']],
+  walk:      [['walk0'], ['walk1']],
+  happy:     [['happy0'], ['happy1'], ['happy0'], ['idle0']],
+  surprised: [['surprised0'], ['idle1'], ['surprised0']],
+  sit:       [['sit0']],
+  fall:      [['fall0']],
+  climb:     [['climb0'], ['climb1']],
+  drag:      [['fall0'], ['surprised0']],
+};
+
+function getFrame() {
+  const frames = stateFrames[state] || stateFrames.idle;
+  return frames[frameIdx % frames.length][0];
+}
+
+const sprite = document.getElementById('sprite');
+const bubble = document.getElementById('bubble');
+const emotionEl = document.getElementById('emotion');
+const ctxMenu = document.getElementById('ctx-menu');
+
+// ── Get screen size ──────────────────────────────────────────
+ipcRenderer.send('get-screen-size');
+ipcRenderer.on('screen-size', (e, { width, height }) => {
+  SW = width; SH = height;
+  wx = Math.floor(Math.random() * (SW - 160));
+  wy = SH - 220;
+  ipcRenderer.send('move-window', wx, wy);
+});
+
+// ── Render ───────────────────────────────────────────────────
+function render() {
+  const key = getFrame();
+  sprite.src = FRAMES[key] || FRAMES['idle0'];
+  sprite.style.left = '20px';
+  sprite.style.top = '20px';
+  sprite.style.width = '120px';
+  sprite.style.height = '188px';
+
+  if (dir === -1) {
+    sprite.style.transform = 'scaleX(-1)';
+    sprite.style.left = '20px';
+  } else {
+    sprite.style.transform = 'scaleX(1)';
+  }
+}
+
+// ── Animation loop ───────────────────────────────────────────
+animInterval = setInterval(() => {
+  if (!isDragging) {
+    frameTick++;
+    const rate = state === 'walk' ? 6 : state === 'happy' ? 4 : state === 'climb' ? 5 : 10;
+    if (frameTick >= rate) {
+      frameTick = 0;
+      frameIdx++;
+    }
+    tick();
+  }
+  render();
+}, 60);
+
+// ── Behavior state machine ───────────────────────────────────
+let walkTicks = 0;
+let sitTicks = 0;
+let climbTicks = 0;
+let isOnWall = false;
+let walkDir = 1;
+
+function tick() {
+  stateTimer++;
+
+  if (state === 'walk') {
+    walkTicks++;
+    const speed = 2;
+    wx += walkDir * speed;
+    dir = walkDir;
+
+    // Hit wall - start climbing
+    if (wx <= 0) {
+      wx = 0;
+      setState('climb');
+      dir = 1;
+      isOnWall = true;
+      return;
+    }
+    if (wx >= SW - 160) {
+      wx = SW - 160;
+      setState('climb');
+      dir = -1;
+      isOnWall = true;
+      return;
+    }
+
+    // Stop walking after random duration
+    if (walkTicks > 80 + Math.floor(Math.random() * 120)) {
+      walkTicks = 0;
+      const r = Math.random();
+      if (r < 0.4) setState('idle');
+      else if (r < 0.7) setState('sit');
+      else { walkDir = -walkDir; }
+    }
+    moveWindow();
+  }
+
+  else if (state === 'climb') {
+    climbTicks++;
+    wy -= 2; // climb up
+    if (wy <= 0) {
+      wy = 0;
+      // Walk along top
+      setState('walk');
+      walkDir = dir === 1 ? -1 : 1;
+      isOnWall = false;
+    }
+    // Fall off wall randomly
+    if (climbTicks > 60 && Math.random() < 0.01) {
+      climbTicks = 0;
+      setState('fall');
+      isOnWall = false;
+    }
+    moveWindow();
+  }
+
+  else if (state === 'fall') {
+    wy += 6;
+    const floor = SH - 220;
+    if (wy >= floor) {
+      wy = floor;
+      setState('idle');
+      showSpeech(getRand(dialogs.drop));
+      showEmotion('💫', 60, 10);
+    }
+    moveWindow();
+  }
+
+  else if (state === 'sit') {
+    sitTicks++;
+    if (sitTicks > 100 + Math.floor(Math.random() * 150)) {
+      sitTicks = 0;
+      const r = Math.random();
+      if (r < 0.5) { setState('walk'); walkDir = Math.random() < 0.5 ? 1 : -1; }
+      else setState('idle');
+    }
+  }
+
+  else if (state === 'idle') {
+    idleCount++;
+    if (idleCount > 60 + Math.floor(Math.random() * 100)) {
+      idleCount = 0;
+      const r = Math.random();
+      if (r < 0.35) { setState('walk'); walkDir = Math.random() < 0.5 ? 1 : -1; }
+      else if (r < 0.5) setState('sit');
+      else if (r < 0.6) {
+        setState('happy');
+        showSpeech(getRand(dialogs.happy));
+        showEmotion('✨', 60, 5);
+      }
+      else if (r < 0.7) {
+        showSpeech(getRand(dialogs.idle));
+      }
+      else if (r < 0.75) {
+        // Chase mouse
+        chaseMouseStep();
+      }
+    }
+  }
+
+  else if (state === 'happy') {
+    if (stateTimer > 40) setState('idle');
+  }
+
+  else if (state === 'surprised') {
+    if (stateTimer > 30) setState('idle');
+  }
+}
+
+function chaseMouseStep() {
+  // Move toward mouse position
+  const targetX = mouseScreenX - 80;
+  const targetY = mouseScreenY - 110;
+  const dx = targetX - wx;
+  const dy = targetY - wy;
+  const dist = Math.sqrt(dx*dx + dy*dy);
+  if (dist > 20) {
+    setState('walk');
+    walkDir = dx > 0 ? 1 : -1;
+    showSpeech(getRand(dialogs.mouse));
+  }
+}
+
+function setState(s) {
+  state = s;
+  stateTimer = 0;
+  frameIdx = 0;
+}
+
+function moveWindow() {
+  wx = Math.max(0, Math.min(SW - 160, wx));
+  wy = Math.max(0, Math.min(SH - 220, wy));
+  ipcRenderer.send('move-window', wx, wy);
+}
+
+// ── Speech bubble ────────────────────────────────────────────
+let speechTimeout = null;
+function showSpeech(text, duration = 3000) {
+  bubble.textContent = text;
+  bubble.style.display = 'block';
+  if (speechTimeout) clearTimeout(speechTimeout);
+  speechTimeout = setTimeout(() => { bubble.style.display = 'none'; }, duration);
+}
+
+// ── Emotion pop ──────────────────────────────────────────────
+let emotionTimeout = null;
+function showEmotion(emoji, top = 30, right = 5) {
+  emotionEl.textContent = emoji;
+  emotionEl.style.top = top + 'px';
+  emotionEl.style.right = right + 'px';
+  emotionEl.style.display = 'block';
+  emotionEl.style.animation = 'none';
+  void emotionEl.offsetWidth;
+  emotionEl.style.animation = 'emotionPop 0.4s ease-out';
+  if (emotionTimeout) clearTimeout(emotionTimeout);
+  emotionTimeout = setTimeout(() => { emotionEl.style.display = 'none'; }, 2000);
+}
+
+// ── Drag ─────────────────────────────────────────────────────
+sprite.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  isDragging = true;
+  dragOffX = e.screenX - wx;
+  dragOffY = e.screenY - wy;
+  setState('drag');
+  showSpeech(getRand(dialogs.drag));
+  showEmotion('😵', 30, 5);
+  document.body.style.cursor = 'grabbing';
+  e.preventDefault();
+});
+
+window.addEventListener('mousemove', e => {
+  mouseScreenX = e.screenX;
+  mouseScreenY = e.screenY;
+  if (isDragging) {
+    wx = e.screenX - dragOffX;
+    wy = e.screenY - dragOffY;
+    wx = Math.max(0, Math.min(SW - 160, wx));
+    wy = Math.max(0, Math.min(SH - 220, wy));
+    ipcRenderer.send('move-window', wx, wy);
+  }
+});
+
+window.addEventListener('mouseup', e => {
+  if (!isDragging) return;
+  isDragging = false;
+  document.body.style.cursor = 'default';
+  // Check if dropped on floor or floating
+  const floor = SH - 220;
+  if (wy < floor - 5) {
+    setState('fall');
+  } else {
+    wy = floor;
+    ipcRenderer.send('move-window', wx, wy);
+    setState('idle');
+    showSpeech(getRand(dialogs.drop));
+    showEmotion('💫', 60, 10);
+  }
+});
+
+// ── Double-click to greet ────────────────────────────────────
+sprite.addEventListener('dblclick', e => {
+  setState('happy');
+  showSpeech(getRand(dialogs.happy));
+  showEmotion('💕', 30, 5);
+});
+
+// ── Right-click context menu ─────────────────────────────────
+sprite.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  ctxMenu.style.display = 'block';
+  ctxMenu.style.left = e.clientX + 'px';
+  ctxMenu.style.top = (e.clientY - ctxMenu.offsetHeight - 10) + 'px';
+});
+
+window.addEventListener('click', e => {
+  if (!ctxMenu.contains(e.target)) ctxMenu.style.display = 'none';
+});
+
+// ── Context menu actions ─────────────────────────────────────
+function sayHello() {
+  ctxMenu.style.display = 'none';
+  showSpeech(getRand(dialogs.idle), 4000);
+  setState('happy');
+  showEmotion('💬', 30, 5);
+}
+function doHappy() {
+  ctxMenu.style.display = 'none';
+  setState('happy');
+  showSpeech(getRand(dialogs.happy));
+  showEmotion('✨', 30, 5);
+}
+function doSurprise() {
+  ctxMenu.style.display = 'none';
+  setState('surprised');
+  showSpeech(getRand(dialogs.surprised));
+  showEmotion('‼️', 30, 5);
+}
+function spawnAnother() {
+  ctxMenu.style.display = 'none';
+  ipcRenderer.send('spawn-another');
+}
+function closeMe() {
+  ctxMenu.style.display = 'none';
+  window.close();
+}
+
+// ── Periodic random behaviors ────────────────────────────────
+setInterval(() => {
+  if (!isDragging && state === 'idle' && Math.random() < 0.03) {
+    const r = Math.random();
+    if (r < 0.3) showSpeech(getRand(dialogs.idle));
+    else if (r < 0.5) { setState('surprised'); showEmotion('!', 30, 5); }
+    else if (r < 0.7) { setState('happy'); showEmotion('♪', 30, 5); showSpeech(getRand(dialogs.happy)); }
+  }
+}, 1000);
+
+// ── Detect rapid mouse movement (startle) ────────────────────
+setInterval(() => {
+  const dx = mouseScreenX - lastMouseX;
+  const dy = mouseScreenY - lastMouseY;
+  const speed = Math.sqrt(dx*dx + dy*dy);
+  if (speed > 80 && !isDragging && state !== 'fall' && state !== 'drag') {
+    if (Math.random() < 0.15) {
+      setState('surprised');
+      showSpeech(getRand(dialogs.surprised));
+      showEmotion('‼️', 30, 5);
+    }
+  }
+  lastMouseX = mouseScreenX;
+  lastMouseY = mouseScreenY;
+}, 200);
+
+// Initial greeting
+setTimeout(() => {
+  showSpeech("Hehe~ I found you! ♪");
+  showEmotion('💕', 30, 5);
+}, 1500);
+
+render();
+</script>
+</body>
+</html>

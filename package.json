@@ -1,0 +1,14 @@
+{
+  "name": "aeamaeth-shimeji",
+  "version": "1.0.0",
+  "description": "Aeamaeth Desktop Shimeji from Wuthering Waves",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-packager . AeamaethShimeji --platform=win32 --arch=x64 --out=dist --overwrite --asar"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-packager": "^17.1.2"
+  }
+}
