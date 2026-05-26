@@ -1,11 +1,8 @@
 @echo off
-echo Starting Aeamaeth Shimeji...
-where node >nul 2>&1
+title Aeamaeth Shimeji
+java -jar AeamaethShimeji.jar
 if %ERRORLEVEL% NEQ 0 (
-    echo Node.js is not installed!
-    echo Please install from https://nodejs.org
+    echo.
+    echo Java not found! Please install Java 17+ from https://adoptium.net
     pause
-    exit /b 1
 )
-npm install
-npx electron .
